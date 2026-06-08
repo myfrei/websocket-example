@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: account-background-service
+  main:
+    web-application-type: none
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: account-background
+      auto-offset-reset: earliest
+
+app:
+  account-service-url: ${APP_ACCOUNT_SERVICE_URL:http://localhost:8082}
+  internal-api-key: ${APP_INTERNAL_API_KEY:internal-demo-key-please-change}
+  topics:
+    transfer-commands: transfer-commands
+
+logging:
+  level:
+    com.bankdemo.background: INFO

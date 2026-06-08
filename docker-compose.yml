@@ -1,0 +1,231 @@
+name: bank-ws-demo
+
+x-jwt-secret: &jwt-secret ${JWT_SECRET:-change-me-super-secret-bank-demo-key-which-is-quite-long-0123456789}
+x-internal-key: &internal-key ${INTERNAL_API_KEY:-internal-demo-key-please-change}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bank-postgres
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: bank-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093"
+      KAFKA_LISTENERS: "PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  connect:
+    image: debezium/connect:2.7.3.Final
+    container_name: bank-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8085:8083"
+    environment:
+      BOOTSTRAP_SERVERS: "kafka:29092"
+      GROUP_ID: "bank-connect"
+      CONFIG_STORAGE_TOPIC: "_connect_configs"
+      OFFSET_STORAGE_TOPIC: "_connect_offsets"
+      STATUS_STORAGE_TOPIC: "_connect_statuses"
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+
+  connector-init:
+    image: curlimages/curl:8.8.0
+    container_name: bank-connector-init
+    depends_on:
+      connect:
+        condition: service_started
+      account-service:
+        condition: service_healthy
+    volumes:
+      - ./infra/debezium/account-connector.json:/connector.json:ro
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        echo "⏳ Waiting for Kafka Connect REST API...";
+        until curl -sf http://connect:8083/connectors >/dev/null; do sleep 3; done;
+        echo "✅ Connect is up. Registering Debezium Postgres connector...";
+        curl -s -X PUT -H "Content-Type: application/json" \
+          --data @/connector.json \
+          http://connect:8083/connectors/account-connector/config \
+          -w "\nHTTP %{http_code}\n";
+        echo "🎯 Debezium connector registration submitted.";
+    restart: "no"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: bank-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "local"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:29092"
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: "debezium"
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: "http://connect:8083"
+      DYNAMIC_CONFIG_ENABLED: "true"
+
+  auth-service:
+    build: ./backend/auth-service
+    container_name: bank-auth-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/authdb"
+      SPRING_DATASOURCE_USERNAME: "postgres"
+      SPRING_DATASOURCE_PASSWORD: "postgres"
+      APP_JWT_SECRET: *jwt-secret
+      APP_INTERNAL_API_KEY: *internal-key
+    ports:
+      - "8081:8081"
+
+  account-service:
+    build: ./backend/account-service
+    container_name: bank-account-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/bankdb"
+      SPRING_DATASOURCE_USERNAME: "postgres"
+      SPRING_DATASOURCE_PASSWORD: "postgres"
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+      APP_JWT_SECRET: *jwt-secret
+      APP_INTERNAL_API_KEY: *internal-key
+      APP_AUTH_SERVICE_URL: "http://auth-service:8081"
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  account-background-service:
+    build: ./backend/account-background-service
+    container_name: bank-account-background-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+      APP_ACCOUNT_SERVICE_URL: "http://account-service:8082"
+      APP_INTERNAL_API_KEY: *internal-key
+
+  chat-service:
+    build: ./backend/chat-service
+    container_name: bank-chat-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/chatdb"
+      SPRING_DATASOURCE_USERNAME: "postgres"
+      SPRING_DATASOURCE_PASSWORD: "postgres"
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+      APP_INTERNAL_API_KEY: *internal-key
+    ports:
+      - "8084:8084"
+
+  ws-service:
+    build: ./backend/ws-service
+    container_name: bank-ws-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+      chat-service:
+        condition: service_started
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+      APP_JWT_SECRET: *jwt-secret
+      APP_INTERNAL_API_KEY: *internal-key
+      APP_ACCOUNT_SERVICE_URL: "http://account-service:8082"
+      APP_CHAT_SERVICE_URL: "http://chat-service:8084"
+    ports:
+      - "8083:8083"
+
+  api-gateway:
+    build: ./backend/api-gateway
+    container_name: bank-api-gateway
+    depends_on:
+      - auth-service
+      - account-service
+      - ws-service
+    environment:
+      APP_AUTH_SERVICE_URI: "http://auth-service:8081"
+      APP_ACCOUNT_SERVICE_URI: "http://account-service:8082"
+      APP_WS_SERVICE_URI: "http://ws-service:8083"
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build: ./frontend
+    container_name: bank-frontend
+    depends_on:
+      - api-gateway
+    ports:
+      - "3000:80"
+
+volumes:
+  pgdata:

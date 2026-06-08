@@ -1,0 +1,36 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+            allowCredentials: false
+      routes:
+        - id: auth-service
+          uri: ${APP_AUTH_SERVICE_URI:http://localhost:8081}
+          predicates:
+            - Path=/api/auth/**,/api/manager/users/**
+
+        - id: account-service
+          uri: ${APP_ACCOUNT_SERVICE_URI:http://localhost:8082}
+          predicates:
+            - Path=/api/accounts/**,/api/transfers/**,/api/manager/accounts/**
+
+        - id: ws-service
+          uri: ${APP_WS_SERVICE_URI:http://localhost:8083}
+          predicates:
+            - Path=/ws/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

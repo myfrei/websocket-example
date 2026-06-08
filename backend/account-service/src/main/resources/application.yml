@@ -1,0 +1,30 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: account-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/bankdb}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+app:
+  jwt:
+    secret: ${APP_JWT_SECRET:change-me-super-secret-bank-demo-key-which-is-quite-long-0123456789}
+  internal-api-key: ${APP_INTERNAL_API_KEY:internal-demo-key-please-change}
+  auth-service-url: ${APP_AUTH_SERVICE_URL:http://localhost:8081}
+  topics:
+    transfer-commands: transfer-commands
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

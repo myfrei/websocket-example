@@ -1,0 +1,25 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: ws-service
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ws-service
+      auto-offset-reset: latest
+
+app:
+  jwt:
+    secret: ${APP_JWT_SECRET:change-me-super-secret-bank-demo-key-which-is-quite-long-0123456789}
+  internal-api-key: ${APP_INTERNAL_API_KEY:internal-demo-key-please-change}
+  account-service-url: ${APP_ACCOUNT_SERVICE_URL:http://localhost:8082}
+  chat-service-url: ${APP_CHAT_SERVICE_URL:http://localhost:8084}
+  topics:
+    transactions: bankdemo.public.transactions
+    chat-events: chat-events
+
+logging:
+  level:
+    com.bankdemo.ws: INFO
